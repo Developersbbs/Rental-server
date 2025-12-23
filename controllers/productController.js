@@ -221,16 +221,30 @@ const createProduct = async (req, res) => {
   // Accept either category or categoryId; supplier or supplierId
   const category = req.body.category || req.body.categoryId;
   const supplier = req.body.supplier || req.body.supplierId;
+  const resolvedIsSellingAccessory = isSellingAccessory === true || isSellingAccessory === 'true';
 
   // Required fields validation (align with schema; unit has a default, hsnNumber is optional)
-  let requiredFields = ['name', 'price', 'category', 'supplier'];
+  let requiredFields = ['name', 'price', 'category'];
 
   // Only require batch info for non-rental products and non-selling accessories
-  if (!isRental && !isSellingAccessory) {
+  if (!isRental && !resolvedIsSellingAccessory) {
     requiredFields.push('batchNumber', 'manufacturingDate');
   }
 
-  const missingFields = requiredFields.filter(field => !req.body[field] && req.body[field] !== 0);
+  // Map fields to their resolved values
+  const fieldValues = {
+    name,
+    price,
+    category,
+    supplier,
+    batchNumber,
+    manufacturingDate
+  };
+
+  const missingFields = requiredFields.filter(field => {
+    const val = fieldValues[field];
+    return val === undefined || val === null || val === '';
+  });
 
   if (missingFields.length > 0) {
     return res.status(400).json({

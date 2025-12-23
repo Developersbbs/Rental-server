@@ -49,7 +49,7 @@ const productSchema = new mongoose.Schema({
   supplier: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Supplier',
-    required: true
+    required: false
   },
   batchNumber: {
     type: String,
