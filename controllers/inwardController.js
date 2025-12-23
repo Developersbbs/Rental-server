@@ -1,0 +1,1048 @@
+const Inward = require('../models/Inward');
+const Product = require('../models/Product');
+const Category = require('../models/Category');
+const ProductBatch = require('../models/ProductBatch');
+const asyncHandler = require('express-async-handler');
+const { handleStockNotifications } = require('../utils/stockNotifications');
+
+// @desc    Create a new inward (GRN)
+// @route   POST /api/inwards
+// @access  Private
+const createInward = asyncHandler(async (req, res) => {
+  console.log('📥 Received inward creation request');
+  console.log('Request body:', JSON.stringify(req.body, null, 2));
+  
+  const {
+    supplier,
+    purchaseOrder,
+    items,
+    invoiceNumber,
+    invoiceDate,
+    deliveryChallanNumber,
+    vehicleNumber,
+    notes,
+    qualityCheckStatus,
+    qualityCheckNotes
+  } = req.body;
+
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    console.error('❌ User not authenticated');
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+  console.log('✅ User authenticated:', req.user.id);
+
+  // Validate items
+  if (!items || items.length === 0) {
+    res.status(400);
+    throw new Error('Inward must have at least one item');
+  }
+
+  // Validate each item
+  for (const item of items) {
+    if (!item.product || item.product.trim() === '') {
+      res.status(400);
+      throw new Error('Each item must have a product');
+    }
+
+    if (item.receivedQuantity <= 0 || item.unitCost < 0) {
+      res.status(400);
+      throw new Error('Received quantity must be positive and unit cost cannot be negative');
+    }
+  }
+
+  // Process items - handle both existing products and new product names
+  console.log('🔄 Processing items...');
+  const processedItems = await Promise.all(items.map(async (item, index) => {
+    console.log(`Processing item ${index + 1}:`, item);
+    let productId = item.product;
+    let productName = '';
+
+    // Check if product is an existing product ID or new product name
+    if (typeof item.product === 'string' && item.product.match(/^[0-9a-fA-F]{24}$/)) {
+      // It's a MongoDB ObjectId - existing product
+      console.log(`Item ${index + 1}: Valid ObjectId detected`);
+      const existingProduct = await Product.findById(item.product);
+      if (!existingProduct) {
+        console.error(`❌ Product with ID ${item.product} not found`);
+        throw new Error(`Product with ID ${item.product} not found`);
+      }
+      productId = existingProduct._id;
+      productName = existingProduct.name;
+      console.log(`Item ${index + 1}: Found product - ${productName}`);
+    } else {
+      // It's a new product name - store as string
+      console.log(`Item ${index + 1}: New product name detected`);
+      productName = item.product.trim();
+      productId = productName;
+    }
+
+    const processedItem = {
+      product: productId,
+      productName: productName,
+      orderedQuantity: item.orderedQuantity || 0,
+      receivedQuantity: item.receivedQuantity,
+      unitCost: item.unitCost,
+      total: item.receivedQuantity * item.unitCost,
+      batchNumber: item.batchNumber,
+      manufacturingDate: item.manufacturingDate,
+      expiryDate: item.expiryDate,
+      notes: item.notes
+    };
+    
+    console.log(`Item ${index + 1} processed:`, processedItem);
+    return processedItem;
+  }));
+  
+  console.log('✅ All items processed successfully');
+
+  // Calculate total amount
+  const totalAmount = processedItems.reduce((sum, item) => sum + item.total, 0);
+  console.log('💰 Calculated total amount:', totalAmount);
+
+  // Prepare inward data
+  const inwardData = {
+    supplier,
+    items: processedItems,
+    totalAmount,
+    invoiceNumber,
+    invoiceDate,
+    deliveryChallanNumber,
+    vehicleNumber,
+    notes,
+    qualityCheckStatus,
+    qualityCheckNotes,
+    createdBy: req.user.id
+  };
+
+  // Only add purchaseOrder if it's a valid ObjectId
+  if (purchaseOrder && typeof purchaseOrder === 'string' && purchaseOrder.trim() !== '' && purchaseOrder.match(/^[0-9a-fA-F]{24}$/)) {
+    inwardData.purchaseOrder = purchaseOrder;
+    console.log('✅ Valid purchase order added:', purchaseOrder);
+  } else if (purchaseOrder) {
+    console.log('⚠️ Invalid purchase order ignored:', purchaseOrder);
+  }
+
+  // Create inward
+  console.log('💾 Creating inward with data:', JSON.stringify(inwardData, null, 2));
+  
+  let inward;
+  try {
+    // Create a new inward document
+    inward = new Inward(inwardData);
+    console.log('📝 Inward document created, about to save...');
+    
+    // Save the document (this will trigger pre-save hooks)
+    await inward.save();
+    console.log('✅ Inward saved successfully:', inward._id);
+    console.log('✅ GRN Number:', inward.grnNumber);
+
+    // Populate the created inward
+    await inward.populate([
+      { path: 'supplier', select: 'name email phone' },
+      { path: 'purchaseOrder', select: 'purchaseOrderNumber' },
+      { path: 'createdBy', select: 'name email' }
+    ]);
+    console.log('✅ Inward populated successfully');
+  } catch (error) {
+    console.error('❌ Error creating inward:', error);
+    console.error('Error details:', error.message);
+    if (error.errors) {
+      console.error('Validation errors:', Object.keys(error.errors));
+      Object.keys(error.errors).forEach(key => {
+        console.error(`  - ${key}:`, error.errors[key].message);
+      });
+    }
+    throw error;
+  }
+
+  // Handle population for mixed product types - populate product details
+  const inwardObj = inward.toObject ? inward.toObject() : inward;
+  
+  // Populate product details for each item
+  for (let i = 0; i < inwardObj.items.length; i++) {
+    const item = inwardObj.items[i];
+    
+    // If product is an ObjectId, fetch the product details
+    if (typeof item.product === 'object' && item.product._id) {
+      // Already populated by mongoose
+      inwardObj.items[i].product = {
+        _id: item.product._id,
+        name: item.product.name || item.productName
+      };
+    } else if (typeof item.product === 'string' && item.product.match(/^[0-9a-fA-F]{24}$/)) {
+      // Fetch product details
+      const productDetails = await Product.findById(item.product);
+      if (productDetails) {
+        inwardObj.items[i].product = {
+          _id: productDetails._id,
+          name: productDetails.name
+        };
+      } else {
+        // Product not found, use productName
+        inwardObj.items[i].product = {
+          name: item.productName
+        };
+      }
+    } else {
+      // New product name (string)
+      inwardObj.items[i].product = {
+        name: item.productName || item.product
+      };
+    }
+  }
+
+  res.status(201).json(inwardObj);
+});
+
+// @desc    Get all inwards
+// @route   GET /api/inwards
+// @access  Private
+const getInwards = asyncHandler(async (req, res) => {
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  const {
+    status,
+    supplier,
+    purchaseOrder,
+    page = 1,
+    limit = 10,
+    sortBy = 'createdAt',
+    sortOrder = 'desc',
+    search,
+    startDate,
+    endDate
+  } = req.query;
+
+  let query = {};
+
+  // Filter by status
+  if (status) {
+    query.status = status;
+  }
+
+  // Filter by supplier
+  if (supplier) {
+    query.supplier = supplier;
+  }
+
+  // Filter by purchase order
+  if (purchaseOrder) {
+    query.purchaseOrder = purchaseOrder;
+  }
+
+  // Date range filter
+  if (startDate || endDate) {
+    query.receivedDate = {};
+    if (startDate) query.receivedDate.$gte = new Date(startDate);
+    if (endDate) query.receivedDate.$lte = new Date(endDate);
+  }
+
+  // Search by GRN number, invoice number, notes, or product names in items
+  if (search) {
+    query.$or = [
+      { grnNumber: { $regex: search, $options: 'i' } },
+      { invoiceNumber: { $regex: search, $options: 'i' } },
+      { deliveryChallanNumber: { $regex: search, $options: 'i' } },
+      { notes: { $regex: search, $options: 'i' } },
+      { 'items.productName': { $regex: search, $options: 'i' } }
+    ];
+  }
+  const options = {
+    page: parseInt(page),
+    limit: parseInt(limit),
+    populate: [
+      { path: 'supplier', select: 'name email phone' },
+      { path: 'items.product', select: 'name sku' },
+      { path: 'purchaseOrder', select: 'purchaseOrderNumber' },
+      { path: 'createdBy', select: 'name email' },
+      { path: 'approvedBy', select: 'name email' }
+    ],
+    sort: { [sortBy]: sortOrder === 'desc' ? -1 : 1 }
+  };
+
+  const inwards = await Inward.paginate(query, options);
+
+  // Handle population for mixed product types
+  if (inwards.docs && inwards.docs.length > 0) {
+    for (let docIndex = 0; docIndex < inwards.docs.length; docIndex++) {
+      const inward = inwards.docs[docIndex];
+      const inwardObj = inward.toObject ? inward.toObject() : inward;
+      
+      // Populate product details for each item
+      for (let i = 0; i < inwardObj.items.length; i++) {
+        const item = inwardObj.items[i];
+        
+        if (typeof item.product === 'object' && item.product._id) {
+          // Already populated
+          inwardObj.items[i].product = {
+            _id: item.product._id,
+            name: item.product.name || item.productName
+          };
+        } else if (typeof item.product === 'string' && item.product.match(/^[0-9a-fA-F]{24}$/)) {
+          const productDetails = await Product.findById(item.product);
+          if (productDetails) {
+            inwardObj.items[i].product = {
+              _id: productDetails._id,
+              name: productDetails.name
+            };
+          } else {
+            inwardObj.items[i].product = {
+              name: item.productName
+            };
+          }
+        } else {
+          inwardObj.items[i].product = {
+            name: item.productName || item.product
+          };
+        }
+      }
+      
+      inwards.docs[docIndex] = inwardObj;
+    }
+  }
+
+  res.json(inwards);
+});
+
+// @desc    Get single inward
+// @route   GET /api/inwards/:id
+// @access  Private
+const getInward = asyncHandler(async (req, res) => {
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  const inward = await Inward.findById(req.params.id)
+    .populate('supplier')
+    .populate('items.product')
+    .populate('purchaseOrder')
+    .populate('createdBy', 'name email')
+    .populate('approvedBy', 'name email');
+
+  if (!inward) {
+    res.status(404);
+    throw new Error('Inward not found');
+  }
+
+  // Handle population for mixed product types
+  const inwardObj = inward.toObject ? inward.toObject() : inward;
+  
+  // Populate product details for each item
+  for (let i = 0; i < inwardObj.items.length; i++) {
+    const item = inwardObj.items[i];
+    
+    if (typeof item.product === 'object' && item.product._id) {
+      // Already populated
+      inwardObj.items[i].product = {
+        _id: item.product._id,
+        name: item.product.name || item.productName
+      };
+    } else if (typeof item.product === 'string' && item.product.match(/^[0-9a-fA-F]{24}$/)) {
+      const productDetails = await Product.findById(item.product);
+      if (productDetails) {
+        inwardObj.items[i].product = {
+          _id: productDetails._id,
+          name: productDetails.name
+        };
+      } else {
+        inwardObj.items[i].product = {
+          name: item.productName
+        };
+      }
+    } else {
+      inwardObj.items[i].product = {
+        name: item.productName || item.product
+      };
+    }
+  }
+
+  res.json(inwardObj);
+});
+
+// @desc    Update inward
+// @route   PUT /api/inwards/:id
+// @access  Private
+const updateInward = asyncHandler(async (req, res) => {
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  const inward = await Inward.findById(req.params.id);
+
+  if (!inward) {
+    res.status(404);
+    throw new Error('Inward not found');
+  }
+
+  // Check if inward can be modified
+  if (!inward.canBeModified()) {
+    res.status(400);
+    throw new Error(`Cannot update inward with status: ${inward.status}`);
+  }
+
+  // Only allow the creator or admin to update
+  if (inward.createdBy.toString() !== req.user.id && req.user.role !== 'admin') {
+    res.status(403);
+    throw new Error('Not authorized to update this inward');
+  }
+
+  const {
+    supplier,
+    items,
+    invoiceNumber,
+    invoiceDate,
+    deliveryChallanNumber,
+    vehicleNumber,
+    notes,
+    qualityCheckStatus,
+    qualityCheckNotes
+  } = req.body;
+
+  // Validate items if provided
+  if (items) {
+    if (items.length === 0) {
+      res.status(400);
+      throw new Error('Inward must have at least one item');
+    }
+
+    for (const item of items) {
+      if (!item.product || item.product.trim() === '') {
+        res.status(400);
+        throw new Error('Each item must have a product');
+      }
+
+      if (item.receivedQuantity <= 0 || item.unitCost < 0) {
+        res.status(400);
+        throw new Error('Received quantity must be positive and unit cost cannot be negative');
+      }
+    }
+  }
+
+  // Process items if provided - handle both existing products and new product names
+  if (items) {
+    inward.items = await Promise.all(items.map(async (item) => {
+      let productId = item.product;
+      let productName = '';
+
+      // Check if product is an existing product ID or new product name
+      if (item.product.match(/^[0-9a-fA-F]{24}$/)) {
+        // It's a MongoDB ObjectId - existing product
+        const existingProduct = await Product.findById(item.product);
+        if (!existingProduct) {
+          throw new Error(`Product with ID ${item.product} not found`);
+        }
+        productId = existingProduct._id;
+        productName = existingProduct.name;
+      } else {
+        // It's a new product name - store as string
+        productName = item.product.trim();
+        productId = productName;
+      }
+
+      return {
+        product: productId,
+        productName: productName,
+        orderedQuantity: item.orderedQuantity || 0,
+        receivedQuantity: item.receivedQuantity,
+        unitCost: item.unitCost,
+        total: item.receivedQuantity * item.unitCost,
+        batchNumber: item.batchNumber,
+        manufacturingDate: item.manufacturingDate,
+        expiryDate: item.expiryDate,
+        notes: item.notes
+      };
+    }));
+  }
+
+  // Update fields
+  if (supplier !== undefined) inward.supplier = supplier;
+  if (invoiceNumber !== undefined) inward.invoiceNumber = invoiceNumber;
+  if (invoiceDate !== undefined) inward.invoiceDate = invoiceDate;
+  if (deliveryChallanNumber !== undefined) inward.deliveryChallanNumber = deliveryChallanNumber;
+  if (vehicleNumber !== undefined) inward.vehicleNumber = vehicleNumber;
+  if (notes !== undefined) inward.notes = notes;
+  if (qualityCheckStatus !== undefined) inward.qualityCheckStatus = qualityCheckStatus;
+  if (qualityCheckNotes !== undefined) inward.qualityCheckNotes = qualityCheckNotes;
+  
+  // Recalculate total amount
+  if (items) {
+    inward.totalAmount = inward.items.reduce((total, item) => total + (item.receivedQuantity * item.unitCost), 0);
+  }
+  
+  const updatedInward = await inward.save();
+
+  try {
+    // Populate the updated inward with proper error handling
+    const populatedInward = await Inward.findById(updatedInward._id)
+      .populate([
+        { path: 'supplier', select: 'name email phone' },
+        { path: 'items.product', select: 'name sku', strictPopulate: false },
+        { path: 'purchaseOrder', select: 'purchaseOrderNumber' },
+        { path: 'createdBy', select: 'name email' },
+        { path: 'approvedBy', select: 'name email' }
+      ])
+      .lean();
+
+    // Ensure items have proper product references
+    if (populatedInward.items) {
+      populatedInward.items = populatedInward.items.map(item => {
+        // Handle cases where product might be null or invalid
+        let product = item.product;
+        if (!product || (typeof product === 'object' && !product._id)) {
+          product = null;
+        } else if (typeof product === 'string' && product.match(/^[0-9a-fA-F]{24}$/)) {
+          // Keep the product ID if it's a valid ObjectId string
+          product = product;
+        } else if (product && product._id) {
+          // Keep the populated product
+          product = product._id;
+        } else {
+          product = null;
+        }
+        
+        return {
+          ...item,
+          product: product
+        };
+      });
+    }
+
+    res.json(populatedInward);
+  } catch (error) {
+    console.error('Error populating inward:', error);
+    // If population fails, return the basic updated inward
+    res.json(updatedInward);
+  }
+});
+
+// @desc    Delete inward
+// @access  Private/Admin
+const deleteInward = asyncHandler(async (req, res) => {
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  const inward = await Inward.findById(req.params.id);
+
+  if (!inward) {
+    res.status(404);
+    throw new Error('Inward not found');
+  }
+
+  // Check if inward can be deleted
+  if (!inward.canBeModified()) {
+    res.status(400);
+    throw new Error(`Cannot delete inward with status: ${inward.status}`);
+  }
+
+  await Inward.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Inward deleted successfully' });
+});
+
+// Helper function to create new product from inward item
+async function createNewProductFromInwardItem(item, inward) {
+  console.log('🔄 Creating new product from inward item...');
+
+  try {
+    // Find a default category (first active category)
+    let defaultCategory = await Category.findOne({ status: 'active' }).select('_id');
+    console.log('Default active category found:', !!defaultCategory);
+
+    // Try by name if none active found
+    if (!defaultCategory) {
+      const generalByName = await Category.findOne({ name: 'General' }).select('_id');
+      if (generalByName) {
+        defaultCategory = generalByName;
+        console.log('Using existing "General" category by name');
+      }
+    }
+
+    // Try by slug if still not found
+    if (!defaultCategory) {
+      const generalBySlug = await Category.findOne({ slug: 'general' }).select('_id');
+      if (generalBySlug) {
+        defaultCategory = generalBySlug;
+        console.log('Using existing "general" category by slug');
+      }
+    }
+
+    // Auto-create a default category if none exists
+    if (!defaultCategory) {
+      console.log('⚠️ No active category found. Creating default "General" category...');
+      try {
+        const general = new Category({ name: 'General', description: 'Default category', status: 'active' });
+        const savedGeneral = await general.save();
+        defaultCategory = { _id: savedGeneral._id };
+        console.log('✅ Default "General" category created');
+      } catch (err) {
+        if (err && err.code === 11000) {
+          console.log('Category already created by another request, fetching it now...');
+          const existing = await Category.findOne({ $or: [{ name: 'General' }, { slug: 'general' }] }).select('_id');
+          if (existing) {
+            defaultCategory = existing;
+          } else {
+            throw err;
+          }
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    const productData = {
+      name: item.productName || item.product,
+      description: item.notes || `Product from inward ${inward.grnNumber}`,
+      price: item.unitCost,
+      category: defaultCategory._id,
+      quantity: item.receivedQuantity,
+      supplier: inward.supplier,
+      batchNumber: item.batchNumber,
+      manufacturingDate: new Date(item.manufacturingDate),
+      reorderLevel: 10,
+      addedDate: new Date()
+    };
+
+    // Validate required fields
+    if (!productData.name || productData.name.trim() === '') {
+      throw new Error('Product name is required');
+    }
+    if (!productData.batchNumber || productData.batchNumber.trim() === '') {
+      throw new Error('Batch number is required');
+    }
+    if (!productData.manufacturingDate || isNaN(productData.manufacturingDate.getTime())) {
+      throw new Error('Valid manufacturing date is required');
+    }
+
+    if (item.expiryDate) {
+      productData.expiryDate = new Date(item.expiryDate);
+      if (isNaN(productData.expiryDate.getTime())) {
+        throw new Error('Invalid expiry date');
+      }
+    }
+
+    console.log('Creating product with data:', productData);
+    const newProduct = new Product(productData);
+    const savedProduct = await newProduct.save();
+    console.log('✅ Product created successfully:', savedProduct._id);
+
+    // Handle stock notifications for new product
+    await handleStockNotifications(savedProduct, savedProduct.quantity);
+
+    // Update the inward item to reference the new product
+    item.product = savedProduct._id;
+
+    return savedProduct;
+  } catch (error) {
+    console.error(`❌ Error creating product for ${item.productName}:`, error);
+    throw error; // Re-throw to be handled by caller
+  }
+}
+
+// Helper to upsert product batch for batch-level pricing
+async function upsertProductBatch(productId, item, supplierId) {
+  try {
+    if (!productId || !item?.batchNumber) {
+      return; // nothing to do
+    }
+
+    const filter = { product: productId, batchNumber: item.batchNumber };
+    const existing = await ProductBatch.findOne(filter);
+    if (existing) {
+      // Keep the original unitCost for the batch, only bump quantity and update dates if provided
+      existing.quantity += item.receivedQuantity || 0;
+      if (item.manufacturingDate) {
+        const mfg = new Date(item.manufacturingDate);
+        if (!isNaN(mfg.getTime())) existing.manufacturingDate = mfg;
+      }
+      if (item.expiryDate) {
+        const exp = new Date(item.expiryDate);
+        if (!isNaN(exp.getTime())) existing.expiryDate = exp;
+      }
+      if (supplierId) existing.supplier = supplierId;
+      await existing.save();
+      return existing;
+    } else {
+      const doc = new ProductBatch({
+        product: productId,
+        batchNumber: item.batchNumber,
+        unitCost: item.unitCost,
+        quantity: item.receivedQuantity || 0,
+        manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : undefined,
+        expiryDate: item.expiryDate ? new Date(item.expiryDate) : undefined,
+        supplier: supplierId
+      });
+      return await doc.save();
+    }
+  } catch (err) {
+    console.error('❌ Error upserting product batch:', err);
+    // Don't block the main flow; surface error via logs only
+  }
+}
+
+// @desc    Approve inward
+// @route   PUT /api/inwards/:id/approve
+// @access  Private/Admin
+const approveInward = asyncHandler(async (req, res) => {
+  console.log('=== APPROVE INWARD START ===');
+  console.log('User ID:', req.user?.id);
+  console.log('Inward ID:', req.params.id);
+
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    console.log('❌ User not authenticated');
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  let inward;
+  try {
+    inward = await Inward.findById(req.params.id);
+    console.log('Inward found:', !!inward);
+  } catch (error) {
+    console.error('❌ Error finding inward:', error);
+    res.status(500);
+    throw new Error('Database error while finding inward');
+  }
+
+  if (!inward) {
+    console.log('❌ Inward not found');
+    res.status(404);
+    throw new Error('Inward not found');
+  }
+
+  console.log('Inward status:', inward.status);
+  console.log('Can be approved:', inward.canBeApproved());
+
+  if (!inward.canBeApproved()) {
+    console.log('❌ Cannot approve inward with status:', inward.status);
+    res.status(400);
+    throw new Error(`Cannot approve inward with status: ${inward.status}`);
+  }
+
+  // Only update status and approval info, don't update inventory
+  inward.status = 'approved';
+  inward.approvedBy = req.user.id;
+  inward.approvalDate = new Date();
+
+  console.log('💾 Saving approved inward...');
+  const approvedInward = await inward.save();
+  console.log('✅ Inward approved and saved successfully');
+
+  // Populate the approved inward
+  console.log('🔄 Populating approved inward...');
+  await approvedInward.populate([
+    { path: 'supplier', select: 'name email phone' },
+    { path: 'items.product', select: 'name sku' },
+    { path: 'purchaseOrder', select: 'purchaseOrderNumber' },
+    { path: 'createdBy', select: 'name email' },
+    { path: 'approvedBy', select: 'name email' }
+  ]);
+  console.log('✅ Inward populated successfully');
+
+  // Handle population for mixed product types
+  const approvedInwardObj = approvedInward.toObject ? approvedInward.toObject() : approvedInward;
+  approvedInwardObj.items = approvedInwardObj.items.map(item => ({
+    ...item,
+    product: (typeof item.product === 'string' && item.product.match(/^[0-9a-fA-F]{24}$/)) ? item.product : null
+  }));
+
+  console.log('=== APPROVE INWARD SUCCESS ===');
+  res.json(approvedInwardObj);
+});
+
+// @desc    Add products from approved inward to inventory
+// @route   PUT /api/inwards/:id/add-to-inventory
+// @access  Private/Admin
+const addInwardToInventory = asyncHandler(async (req, res) => {
+  console.log('=== ADD TO INVENTORY START ===');
+  console.log('User ID:', req.user?.id);
+  console.log('Inward ID:', req.params.id);
+
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    console.log('❌ User not authenticated');
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  let inward;
+  try {
+    inward = await Inward.findById(req.params.id);
+    console.log('Inward found:', !!inward);
+  } catch (error) {
+    console.error('❌ Error finding inward:', error);
+    res.status(500);
+    throw new Error('Database error while finding inward');
+  }
+
+  if (!inward) {
+    console.log('❌ Inward not found');
+    res.status(404);
+    throw new Error('Inward not found');
+  }
+
+  if (inward.status !== 'approved') {
+    if (req.user.role === 'stockmanager') {
+      console.log('ℹ️ Inward is not approved, auto-approving for stock manager...');
+      inward.status = 'approved';
+      inward.approvedBy = req.user.id;
+      inward.approvalDate = new Date();
+      await inward.save();
+      console.log('✅ Inward auto-approved by stock manager');
+    } else {
+      console.log('❌ Cannot add to inventory - Inward is not approved');
+      res.status(400);
+      throw new Error('Only approved inwards can be added to inventory');
+    }
+  }
+
+  if (inward.inventoryAdded) {
+    console.log('❌ Inventory already added for this inward');
+    res.status(400);
+    throw new Error('Inventory already added for this inward');
+  }
+
+  console.log('🔄 Processing items for inventory update...');
+  for (let i = 0; i < inward.items.length; i++) {
+    const item = inward.items[i];
+    console.log(`Processing item ${i + 1}/${inward.items.length}:`, item.productName || item.product);
+    console.log('Item type check:', typeof item.product, item.product);
+
+    try {
+      if (typeof item.product === 'string' && item.product.match(/^[0-9a-fA-F]{24}$/)) {
+        console.log('✅ Existing product - updating quantity');
+        // Existing product - update quantity
+        const product = await Product.findById(item.product);
+        if (product) {
+          const oldQuantity = product.quantity;
+          product.quantity += item.receivedQuantity;
+          // Update optional fields if provided
+          if (item.batchNumber && String(item.batchNumber).trim() !== '') {
+            product.batchNumber = item.batchNumber;
+          }
+          if (item.manufacturingDate) {
+            const mfg = new Date(item.manufacturingDate);
+            if (!isNaN(mfg.getTime())) {
+              product.manufacturingDate = mfg;
+            }
+          }
+          if (item.expiryDate) {
+            const exp = new Date(item.expiryDate);
+            if (!isNaN(exp.getTime())) {
+              product.expiryDate = exp;
+            }
+          }
+          await product.save();
+          console.log(`✅ Product ${product.name} updated: ${oldQuantity} → ${product.quantity}`);
+          // Upsert batch record
+          await upsertProductBatch(product._id, item, inward.supplier);
+        } else {
+          console.error(`❌ Product with ID ${item.product} not found in database`);
+          throw new Error(`Product with ID ${item.product} not found`);
+        }
+      } else if (item.product && typeof item.product === 'object' && item.product._id) {
+        console.log('✅ Existing populated product - updating quantity');
+        const product = await Product.findById(item.product._id);
+        if (product) {
+          const oldQuantity = product.quantity;
+          product.quantity += item.receivedQuantity;
+          if (item.batchNumber && String(item.batchNumber).trim() !== '') {
+            product.batchNumber = item.batchNumber;
+          }
+          if (item.manufacturingDate) {
+            const mfg = new Date(item.manufacturingDate);
+            if (!isNaN(mfg.getTime())) {
+              product.manufacturingDate = mfg;
+            }
+          }
+          if (item.expiryDate) {
+            const exp = new Date(item.expiryDate);
+            if (!isNaN(exp.getTime())) {
+              product.expiryDate = exp;
+            }
+          }
+          await product.save();
+          console.log(`✅ Product ${product.name} updated: ${oldQuantity} → ${product.quantity}`);
+          // Upsert batch record
+          await upsertProductBatch(product._id, item, inward.supplier);
+        } else {
+          console.error(`❌ Product with ID ${item.product._id} not found in database`);
+          res.status(404);
+          throw new Error(`Product with ID ${item.product._id} not found`);
+        }
+      } else {
+        console.log('🆕 New product - creating it');
+        // New product - create it
+        const createdProduct = await createNewProductFromInwardItem(item, inward);
+        if (createdProduct?._id) {
+          await upsertProductBatch(createdProduct._id, item, inward.supplier);
+        }
+      }
+    } catch (error) {
+      console.error(`❌ Error processing item ${item.productName || item.product}:`, error);
+      // Return a 400 for validation-like errors, else 500
+      if (!res.headersSent) {
+        res.status(400);
+      }
+      throw new Error(`Failed to process inventory item: ${item.productName || item.product} - ${error.message}`);
+    }
+  }
+
+  // Mark inward as added to inventory
+  inward.inventoryAdded = true;
+  await inward.save();
+
+  console.log('=== ADD TO INVENTORY SUCCESS ===');
+  res.json({ 
+    success: true, 
+    message: 'Products added to inventory successfully',
+    inwardId: inward._id
+  });
+});
+
+// @desc    Reject inward
+// @route   PUT /api/inwards/:id/reject
+// @access  Private/Admin
+const rejectInward = asyncHandler(async (req, res) => {
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  const { rejectionReason } = req.body;
+  const inward = await Inward.findById(req.params.id);
+
+  if (!inward) {
+    res.status(404);
+    throw new Error('Inward not found');
+  }
+
+  inward.status = 'rejected';
+  inward.rejectionReason = rejectionReason;
+  inward.rejectedBy = req.user.id;
+  inward.rejectionDate = new Date();
+
+  const rejectedInward = await inward.save();
+
+  // Populate the rejected inward
+  await rejectedInward.populate([
+    { path: 'supplier', select: 'name email phone' },
+    { path: 'items.product', select: 'name sku' },
+    { path: 'purchaseOrder', select: 'purchaseOrderNumber' },
+    { path: 'createdBy', select: 'name email' },
+    { path: 'approvedBy', select: 'name email' }
+  ]);
+
+  // Handle population for mixed product types
+  const rejectedInwardObj = rejectedInward.toObject ? rejectedInward.toObject() : rejectedInward;
+  rejectedInwardObj.items = rejectedInwardObj.items.map(item => ({
+    ...item,
+    product: (typeof item.product === 'string' && item.product.match(/^[0-9a-fA-F]{24}$/)) ? item.product : null
+  }));
+
+  res.json(rejectedInwardObj);
+});
+
+// @desc    Complete inward
+// @route   PUT /api/inwards/:id/complete
+// @access  Private/Admin
+const completeInward = asyncHandler(async (req, res) => {
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  const inwardToComplete = await Inward.findById(req.params.id);
+
+  if (!inwardToComplete) {
+    res.status(404);
+    throw new Error('Inward not found');
+  }
+
+  if (inwardToComplete.status !== 'approved') {
+    res.status(400);
+    throw new Error('Only approved inwards can be completed');
+  }
+
+  inwardToComplete.status = 'completed';
+  inwardToComplete.completedBy = req.user.id;
+  inwardToComplete.completionDate = new Date();
+
+  const completedInward = await inwardToComplete.save();
+
+  // Populate the completed inward
+  await completedInward.populate([
+    { path: 'supplier', select: 'name email phone' },
+    { path: 'items.product', select: 'name sku' },
+    { path: 'purchaseOrder', select: 'purchaseOrderNumber' },
+    { path: 'createdBy', select: 'name email' },
+    { path: 'approvedBy', select: 'name email' }
+  ]);
+
+  // Handle population for mixed product types
+  const completedInwardObj = completedInward.toObject ? completedInward.toObject() : completedInward;
+  completedInwardObj.items = completedInwardObj.items.map(item => ({
+    ...item,
+    product: (typeof item.product === 'string' && item.product.match(/^[0-9a-fA-F]{24}$/)) ? item.product : null
+  }));
+
+  res.json(completedInwardObj);
+});
+
+// @desc    Get inward statistics
+// @access  Private
+const getInwardStats = asyncHandler(async (req, res) => {
+  // Check if user is authenticated
+  if (!req.user || !req.user.id) {
+    res.status(401);
+    throw new Error('User not authenticated');
+  }
+
+  const stats = await Inward.aggregate([
+    {
+      $group: {
+        _id: '$status',
+        count: { $sum: 1 },
+        totalAmount: { $sum: '$totalAmount' }
+      }
+    }
+  ]);
+
+  const totalInwards = await Inward.countDocuments();
+  const totalValue = await Inward.aggregate([
+    { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+  ]);
+
+  res.json({
+    statusBreakdown: stats,
+    totalInwards,
+    totalValue: totalValue[0]?.total || 0
+  });
+});
+
+module.exports = {
+  createInward,
+  getInwards,
+  getInward,
+  updateInward,
+  deleteInward,
+  approveInward,
+  rejectInward,
+  completeInward,
+  getInwardStats,
+  addInwardToInventory
+};
