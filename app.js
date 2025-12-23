@@ -49,6 +49,8 @@ const allowedOrigins = [
   'http://127.0.0.1:5173',
   'http://127.0.0.1:5174',
   'http://localhost:5000',
+  'https://singular-macaron-6dafc7.netlify.app',
+  'https://singular-macaron-6dafc7.netlify.app/'
 ];
 
 // Enhanced CORS configuration
