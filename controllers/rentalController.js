@@ -30,14 +30,8 @@ exports.createRental = async (req, res) => {
             return res.status(403).json({ message: 'This customer is blocked and cannot create new rentals' });
         }
 
-        // Validate outTime if provided
-        if (outTime) {
-            const startTime = new Date(outTime);
-            const now = new Date();
-            if (startTime > now) {
-                return res.status(400).json({ message: 'Rental start time cannot be in the future' });
-            }
-        }
+        // Validate outTime if provided (Restriction removed to allow future dates)
+        // if (outTime) { ... }
 
         // Process Sold Items (Selling Accessories)
         const processedSoldItems = [];
