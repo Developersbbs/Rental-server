@@ -1,0 +1,3 @@
+
+router.route('/:id/payments')
+  .post(protect, addPayment);

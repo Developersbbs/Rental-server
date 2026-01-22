@@ -9,7 +9,8 @@ const {
   approvePurchase,
   rejectPurchase,
   receivePurchase,
-  getPurchaseStats
+  getPurchaseStats,
+  addPayment
 } = require('../controllers/purchaseController');
 const { protect, allowRoles } = require('../middlewares/authMiddlewares');
 
@@ -33,5 +34,8 @@ router.route('/:id/receive')
 
 router.route('/stats/overview')
   .get(protect, getPurchaseStats);
+
+router.route('/:id/payments')
+  .post(protect, addPayment);
 
 module.exports = router;

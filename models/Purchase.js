@@ -97,7 +97,56 @@ const purchaseSchema = new mongoose.Schema({
   isFullyReceived: {
     type: Boolean,
     default: false
-  }
+  },
+  // Payment Tracking
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'paid', 'partial'],
+    default: 'pending'
+  },
+  paymentMethod: {
+    type: String,
+    enum: ['cash', 'card', 'upi', 'bank_transfer', 'credit'],
+    default: 'cash'
+  },
+  paidAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  dueAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  paymentHistory: [{
+    amount: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    paymentMethod: {
+      type: String,
+      enum: ['cash', 'card', 'upi', 'bank_transfer', 'credit'],
+      required: true
+    },
+    paymentAccount: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'PaymentAccount'
+    },
+    paymentDate: {
+      type: Date,
+      default: Date.now
+    },
+    notes: {
+      type: String,
+      trim: true
+    },
+    recordedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    }
+  }]
 }, {
   timestamps: true
 });

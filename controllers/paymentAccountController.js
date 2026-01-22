@@ -1,4 +1,6 @@
 const PaymentAccount = require('../models/PaymentAccount');
+const Bill = require('../models/Bill');
+const Purchase = require('../models/Purchase');
 
 // @desc    Get all payment accounts
 // @route   GET /api/payment-accounts
@@ -213,23 +215,27 @@ exports.getAccountTransactions = async (req, res) => {
         const { id } = req.params;
         const { startDate, endDate, limit = 50 } = req.query;
 
-        const Bill = require('../models/Bill');
+        const bills = await Bill.find(query)
+            .populate('customerId', 'name email phone')
+            .populate('rentalDetails.rentalId', 'rentalId')
+            .populate('paymentHistory.paymentAccount', 'name accountType')
+            .sort({ 'paymentHistory.paymentDate': -1 })
+            .limit(parseInt(limit));
 
-        // Build query to find bills with payments to this account
-        const query = {
+        // Build query for purchases
+        const purchaseQuery = {
             'paymentHistory.paymentAccount': id
         };
 
         if (startDate && endDate) {
-            query['paymentHistory.paymentDate'] = {
+            purchaseQuery['paymentHistory.paymentDate'] = {
                 $gte: new Date(startDate),
                 $lte: new Date(endDate)
             };
         }
 
-        const bills = await Bill.find(query)
-            .populate('customerId', 'name email phone')
-            .populate('rentalDetails.rentalId', 'rentalId')
+        const purchases = await Purchase.find(purchaseQuery)
+            .populate('supplier', 'name email phone')
             .populate('paymentHistory.paymentAccount', 'name accountType')
             .sort({ 'paymentHistory.paymentDate': -1 })
             .limit(parseInt(limit));
@@ -240,14 +246,19 @@ exports.getAccountTransactions = async (req, res) => {
             bill.paymentHistory.forEach(payment => {
                 if (payment.paymentAccount && payment.paymentAccount._id.toString() === id) {
                     transactions.push({
-                        billId: bill._id,
-                        billNumber: bill.billNumber,
+                        type: 'bill',
+                        id: bill._id,
+                        number: bill.billNumber,
+                        partyName: bill.customerName,
+                        partyPhone: bill.customerPhone,
+                        partyEmail: bill.customerEmail,
+
                         amount: payment.amount,
                         paymentMethod: payment.paymentMethod,
                         paymentDate: payment.paymentDate,
                         notes: payment.notes,
                         // Include full bill details for frontend display
-                        bill: {
+                        details: {
                             _id: bill._id,
                             billNumber: bill.billNumber,
                             customerName: bill.customerName,
@@ -256,6 +267,34 @@ exports.getAccountTransactions = async (req, res) => {
                             type: bill.type,
                             items: bill.items,
                             rentalDetails: bill.rentalDetails
+                        }
+                    });
+                }
+            });
+        });
+
+        purchases.forEach(purchase => {
+            purchase.paymentHistory.forEach(payment => {
+                if (payment.paymentAccount && payment.paymentAccount._id.toString() === id) {
+                    transactions.push({
+                        type: 'purchase',
+                        id: purchase._id,
+                        number: purchase.purchaseOrderNumber,
+                        partyName: purchase.supplier?.name || 'Unknown Supplier',
+                        partyPhone: purchase.supplier?.phone || '',
+                        partyEmail: purchase.supplier?.email || '',
+
+                        amount: payment.amount,
+                        paymentMethod: payment.paymentMethod,
+                        paymentDate: payment.paymentDate,
+                        notes: payment.notes,
+
+                        details: {
+                            _id: purchase._id,
+                            purchaseOrderNumber: purchase.purchaseOrderNumber,
+                            supplierName: purchase.supplier?.name,
+                            items: purchase.items,
+                            paymentStatus: purchase.paymentStatus
                         }
                     });
                 }
