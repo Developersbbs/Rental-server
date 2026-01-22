@@ -12,6 +12,11 @@ const rentalInventoryItemSchema = new mongoose.Schema({
         unique: true,
         trim: true
     },
+    isArchived: {
+        type: Boolean,
+        default: false,
+        index: true
+    },
     status: {
         type: String,
         enum: ['available', 'rented', 'maintenance', 'scrap', 'missing'],

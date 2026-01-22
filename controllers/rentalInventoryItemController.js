@@ -26,7 +26,7 @@ exports.getAllItems = async (req, res) => {
 exports.getItemsByRentalProduct = async (req, res) => {
     try {
         const { rentalProductId } = req.params;
-        const items = await RentalInventoryItem.find({ rentalProductId })
+        const items = await RentalInventoryItem.find({ rentalProductId, isArchived: { $ne: true } })
             .populate('rentalProductId', 'name')
             .populate('inwardId', 'inwardNumber')
             .sort({ createdAt: -1 });
@@ -127,6 +127,59 @@ exports.updateItem = async (req, res) => {
         }
 
         res.status(200).json(item);
+    } catch (err) {
+        res.status(500).json({ message: 'Server error', error: err.message });
+    }
+};
+
+// Get archived items for a rental product
+exports.getArchivedItems = async (req, res) => {
+    try {
+        const { rentalProductId } = req.params;
+        const items = await RentalInventoryItem.find({ rentalProductId, isArchived: true })
+            .populate('rentalProductId', 'name')
+            .populate('inwardId', 'inwardNumber')
+            .sort({ updatedAt: -1 });
+
+        res.status(200).json(items);
+    } catch (err) {
+        res.status(500).json({ message: 'Server error', error: err.message });
+    }
+};
+
+// Toggle archive status
+exports.toggleArchiveStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const item = await RentalInventoryItem.findById(id);
+
+        if (!item) {
+            return res.status(404).json({ message: 'Item not found' });
+        }
+
+        // Cannot archive rented items
+        if (!item.isArchived && item.status === 'rented') {
+            return res.status(400).json({ message: 'Cannot archive item that is currently rented' });
+        }
+
+        const newArchiveStatus = !item.isArchived;
+        item.isArchived = newArchiveStatus;
+
+        item.history.push({
+            action: newArchiveStatus ? 'maintenance_start' : 'maintenance_end', // Using maintenance actions as fallback or defining new ones if enum allows
+            details: newArchiveStatus ? 'Item Archived' : 'Item Restored from Archive',
+            performedBy: req.user ? req.user._id : null
+        });
+
+        await item.save();
+
+        // Update product quantities
+        await updateProductQuantities(item.rentalProductId);
+
+        res.status(200).json({
+            message: `Item ${newArchiveStatus ? 'archived' : 'restored'} successfully`,
+            item
+        });
     } catch (err) {
         res.status(500).json({ message: 'Server error', error: err.message });
     }

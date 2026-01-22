@@ -9,6 +9,9 @@ router.use(protect);
 // Get all items
 router.get('/', rentalInventoryItemController.getAllItems);
 
+// Get archived items
+router.get('/archived/:rentalProductId', rentalInventoryItemController.getArchivedItems);
+
 // Get items for a rental product
 router.get('/rental-product/:rentalProductId', rentalInventoryItemController.getItemsByRentalProduct);
 
@@ -20,6 +23,11 @@ router.get('/:id/history', rentalInventoryItemController.getItemHistory);
 
 // Update item status/condition
 router.put('/:id', allowRoles('superadmin'), rentalInventoryItemController.updateItem);
+
+
+
+// Toggle archive status
+router.patch('/:id/archive', allowRoles('superadmin'), rentalInventoryItemController.toggleArchiveStatus);
 
 // Delete item
 router.delete('/:id', allowRoles('superadmin'), rentalInventoryItemController.deleteItem);
