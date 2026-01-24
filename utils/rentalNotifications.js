@@ -88,6 +88,18 @@ async function checkRentalReturns() {
                     }
                 );
             }
+            // Check if rental is due tomorrow
+            else if (expectedReturnDate.getTime() === tomorrow.getTime()) {
+                // Create/update due tomorrow notification
+                await upsertRentalNotification(
+                    { rentalId: rental._id, type: 'rental-due-tomorrow', isRead: false },
+                    {
+                        message: `Rental ${rental.rentalId} is due for return tomorrow! Customer: ${rental.customer.name}`,
+                        rentalId: rental._id,
+                        type: 'rental-due-tomorrow'
+                    }
+                );
+            }
         }
 
         console.log(`[Rental Check] Checked ${rentals.length} active rentals at ${now.toISOString()}`);
@@ -101,7 +113,7 @@ async function checkRentalReturns() {
  */
 async function handleRentalReturn(rentalId) {
     try {
-        await clearRentalNotifications(rentalId, ['rental-due', 'rental-overdue']);
+        await clearRentalNotifications(rentalId, ['rental-due', 'rental-overdue', 'rental-due-tomorrow']);
         console.log(`[Rental Check] Cleared notifications for rental ${rentalId}`);
     } catch (error) {
         console.error('[Rental Check] Error clearing rental notifications:', error);

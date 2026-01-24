@@ -37,11 +37,29 @@ exports.getItemsByRentalProduct = async (req, res) => {
     }
 };
 
+// Get single item by ID
+exports.getItemById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const item = await RentalInventoryItem.findById(id)
+            .populate('rentalProductId', 'name')
+            .populate('inwardId', 'inwardNumber');
+
+        if (!item) {
+            return res.status(404).json({ message: 'Item not found' });
+        }
+
+        res.status(200).json(item);
+    } catch (err) {
+        res.status(500).json({ message: 'Server error', error: err.message });
+    }
+};
+
 // Add a new rental inventory item
 exports.addItem = async (req, res) => {
     try {
         const { rentalProductId } = req.params;
-        const { uniqueIdentifier, condition, purchaseCost, purchaseDate, batchNumber, notes, accessories } = req.body;
+        const { uniqueIdentifier, condition, purchaseCost, purchaseDate, batchNumber, notes, accessories, serialNumber } = req.body;
 
         // Check if product exists
         const product = await RentalProduct.findById(rentalProductId);
@@ -65,6 +83,7 @@ exports.addItem = async (req, res) => {
             purchaseDate: purchaseDate || Date.now(),
             batchNumber,
             notes,
+            serialNumber,
             accessories: accessories || [],
             history: [{
                 action: 'added',
@@ -88,7 +107,7 @@ exports.addItem = async (req, res) => {
 exports.updateItem = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, condition, notes, accessories, damageReason } = req.body;
+        const { status, condition, notes, accessories, damageReason, serialNumber } = req.body;
 
         const item = await RentalInventoryItem.findById(id);
         if (!item) {
@@ -113,6 +132,7 @@ exports.updateItem = async (req, res) => {
         if (condition) item.condition = condition;
         if (accessories) item.accessories = accessories;
         if (damageReason) item.damageReason = damageReason;
+        if (serialNumber !== undefined) item.serialNumber = serialNumber;
 
         // Clear damageReason if status is changing from damaged to something else
         if (oldStatus === 'damaged' && status && status !== 'damaged') {

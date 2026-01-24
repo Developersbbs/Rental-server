@@ -1,5 +1,6 @@
 const RentalProduct = require('../models/RentalProduct');
 const ServiceAlert = require('../models/ServiceAlert');
+const Notification = require('../models/Notification');
 
 /**
  * Calculate next service due date based on last service date and interval
@@ -78,6 +79,7 @@ const generateServiceAlerts = async () => {
             if (!existingAlert && needsServiceAlert(product)) {
                 const severity = getAlertSeverity(product.nextServiceDue, product.serviceAlertDays);
 
+
                 await ServiceAlert.create({
                     rentalProduct: product._id,
                     alertDate: now,
@@ -86,7 +88,24 @@ const generateServiceAlerts = async () => {
                     status: 'pending'
                 });
 
-                console.log(`Created service alert for product: ${product.name}`);
+                // Create user notification
+                await Notification.findOneAndUpdate(
+                    {
+                        productId: product._id,
+                        type: 'service-due',
+                        isRead: false
+                    },
+                    {
+                        message: `Service due for ${product.name}`,
+                        productId: product._id,
+                        type: 'service-due',
+                        isRead: false,
+                        createdAt: new Date()
+                    },
+                    { upsert: true, new: true, setDefaultsOnInsert: true }
+                );
+
+                console.log(`Created service alert and notification for product: ${product.name}`);
             }
         }
 

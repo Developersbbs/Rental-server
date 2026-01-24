@@ -50,6 +50,11 @@ const rentalInventoryItemSchema = new mongoose.Schema({
     notes: {
         type: String
     },
+    serialNumber: {
+        type: String,
+        trim: true,
+        sparse: true // Allows null/undefined values while maintaining uniqueness for non-null values
+    },
     // Rental Rates
     hourlyRent: {
         type: Number,

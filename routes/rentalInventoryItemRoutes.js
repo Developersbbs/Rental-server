@@ -15,8 +15,8 @@ router.get('/archived/:rentalProductId', rentalInventoryItemController.getArchiv
 // Get items for a rental product
 router.get('/rental-product/:rentalProductId', rentalInventoryItemController.getItemsByRentalProduct);
 
-// Add a new item
-router.post('/rental-product/:rentalProductId', allowRoles('superadmin'), rentalInventoryItemController.addItem);
+// Get single item by ID
+router.get('/:id', rentalInventoryItemController.getItemById);
 
 // Get item history
 router.get('/:id/history', rentalInventoryItemController.getItemHistory);

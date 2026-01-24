@@ -94,11 +94,19 @@ exports.createServiceRecord = async (req, res) => {
         item.condition = afterCondition;
         item.healthScore = calculateHealthScore(item, afterCondition);
 
+        // Update status based on service status
+        if (serviceStatus === 'in_progress' || serviceStatus === 'scheduled') {
+            item.status = 'maintenance';
+        } else if (serviceStatus === 'completed') {
+            item.status = 'available'; // Assume available if maintenance done. 
+            // Ideally we check if other maintenance is pending, but for now this is the requirement.
+        }
+
         // Add to history
         item.history.push({
-            action: serviceType === 'preventive' ? 'maintenance_end' : 'maintenance_end',
+            action: serviceType === 'preventive' ? 'maintenance_start' : 'maintenance_start',
             date: serviceDate || Date.now(),
-            details: `${serviceType} service completed: ${description}`,
+            details: `${serviceType} service ${serviceStatus}: ${description}`,
             performedBy: req.user._id
         });
 
@@ -241,6 +249,19 @@ exports.updateServiceRecord = async (req, res) => {
             { $set: updateData },
             { new: true, runValidators: true }
         ).populate('inventoryItemId technician createdBy');
+
+        // Sync item status on update
+        if (updateData.serviceStatus && record.inventoryItemId) {
+            const item = await RentalInventoryItem.findById(record.inventoryItemId._id || record.inventoryItemId);
+            if (item) {
+                if (updateData.serviceStatus === 'in_progress' || updateData.serviceStatus === 'scheduled') {
+                    item.status = 'maintenance';
+                } else if (updateData.serviceStatus === 'completed') {
+                    item.status = 'available';
+                }
+                await item.save();
+            }
+        }
 
         if (!record) {
             return res.status(404).json({ message: 'Service record not found' });
