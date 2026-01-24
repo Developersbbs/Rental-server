@@ -19,8 +19,12 @@ const rentalInventoryItemSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['available', 'rented', 'maintenance', 'scrap', 'missing'],
+        enum: ['available', 'rented', 'maintenance', 'scrap', 'missing', 'damaged'],
         default: 'available'
+    },
+    damageReason: {
+        type: String,
+        trim: true
     },
     condition: {
         type: String,
@@ -120,7 +124,7 @@ const rentalInventoryItemSchema = new mongoose.Schema({
     history: [{
         action: {
             type: String,
-            enum: ['added', 'received', 'rented', 'returned', 'maintenance_start', 'maintenance_end', 'scrapped', 'marked_missing'],
+            enum: ['added', 'received', 'rented', 'returned', 'maintenance_start', 'maintenance_end', 'scrapped', 'marked_missing', 'marked_damaged'],
             required: true
         },
         date: {

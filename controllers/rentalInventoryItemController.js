@@ -88,7 +88,7 @@ exports.addItem = async (req, res) => {
 exports.updateItem = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, condition, notes, accessories } = req.body;
+        const { status, condition, notes, accessories, damageReason } = req.body;
 
         const item = await RentalInventoryItem.findById(id);
         if (!item) {
@@ -101,9 +101,10 @@ exports.updateItem = async (req, res) => {
             item.history.push({
                 action: status === 'missing' ? 'marked_missing' :
                     status === 'scrap' ? 'scrapped' :
-                        status === 'maintenance' ? 'maintenance_start' :
-                            status === 'available' ? 'maintenance_end' : 'rented',
-                details: notes || `Status changed from ${oldStatus} to ${status}`,
+                        status === 'damaged' ? 'marked_damaged' :
+                            status === 'maintenance' ? 'maintenance_start' :
+                                status === 'available' ? 'maintenance_end' : 'rented',
+                details: notes || damageReason || `Status changed from ${oldStatus} to ${status}`,
                 performedBy: req.user ? req.user._id : null
             });
             item.status = status;
@@ -111,6 +112,13 @@ exports.updateItem = async (req, res) => {
 
         if (condition) item.condition = condition;
         if (accessories) item.accessories = accessories;
+        if (damageReason) item.damageReason = damageReason;
+
+        // Clear damageReason if status is changing from damaged to something else
+        if (oldStatus === 'damaged' && status && status !== 'damaged') {
+            item.damageReason = undefined;
+        }
+
         if (notes && !status) {
             item.history.push({
                 action: 'maintenance_start',

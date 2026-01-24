@@ -328,17 +328,27 @@ exports.returnRental = async (req, res) => {
             }
 
             // Update Rental Inventory Item status
-            await RentalInventoryItem.findByIdAndUpdate(rItem.itemId, {
+            const updateData = {
                 status: 'available',
                 condition: rItem.returnCondition || 'good',
                 $push: {
                     history: {
                         action: 'returned',
-                        details: `Returned from Rental ID: ${rental.rentalId}. Condition: ${rItem.returnCondition || 'good'}`,
+                        details: `Returned from Rental ID: ${rental.rentalId}. Condition: ${rItem.returnCondition || 'good'}` + (rItem.damageReason ? `. Reason: ${rItem.damageReason}` : ''),
                         performedBy: req.user ? req.user._id : null
                     }
                 }
-            });
+            };
+
+            if (rItem.returnCondition === 'damaged') {
+                updateData.status = 'damaged';
+                updateData.damageReason = rItem.damageReason;
+                // Add specific damaged history entry if needed, or rely on 'returned' entry with details
+                // The history action 'marked_damaged' is usually for manual updates, but we can stick to 'returned' with details
+                // or add a secondary history entry. Let's stick to modifying the 'returned' details and setting properties.
+            }
+
+            await RentalInventoryItem.findByIdAndUpdate(rItem.itemId, updateData);
 
             // Add to Bill Items
             let rentalProductId = inventoryItem.rentalProductId;

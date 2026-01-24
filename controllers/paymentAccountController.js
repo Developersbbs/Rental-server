@@ -215,6 +215,17 @@ exports.getAccountTransactions = async (req, res) => {
         const { id } = req.params;
         const { startDate, endDate, limit = 50 } = req.query;
 
+        const query = {
+            'paymentHistory.paymentAccount': id
+        };
+
+        if (startDate && endDate) {
+            query['paymentHistory.paymentDate'] = {
+                $gte: new Date(startDate),
+                $lte: new Date(endDate)
+            };
+        }
+
         const bills = await Bill.find(query)
             .populate('customerId', 'name email phone')
             .populate('rentalDetails.rentalId', 'rentalId')
